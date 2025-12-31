@@ -1,121 +1,170 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState, useMemo } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import * as THREE from 'three';
 
-function App() {
-  const canvasRef = useRef(null);
-  const [isVisualizing, setIsVisualizing] = useState(false);
-  const [error, setError] = useState(null);
-  const audioContextRef = useRef(null);
-  const analyserRef = useRef(null);
-  const animationFrameRef = useRef(null);
+function AudioBars({ analyser }) {
+  const meshRef = useRef();
+  const dummy = useMemo(() => new THREE.Object3D(), []);
 
-  const startVisualizer = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      source.connect(analyserRef.current);
+  useFrame(() => {
+    if (!analyser || !meshRef.current) return;
 
-      setIsVisualizing(true);
-      setError(null);
-      drawVisualizer();
-    } catch (err) {
-      setError('Microphone access denied or unavailable. Please allow microphone permission.');
-      console.error(err);
+    // Get frequency data
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(dataArray);
+
+    const barCount = 64;
+
+    for (let i = 0; i < barCount; i++) {
+      // Sample frequencies (every 2nd bin for smoother spread)
+      let value = dataArray[Math.floor(i * 2)] / 255;
+
+      // Simple calculation: strong bass boost for low frequencies
+      const bassBoost = i < 16 ? value * 4 : value * 1.5;
+      const height = Math.max(0.3, bassBoost * 12);
+
+      // Position bar along X-axis, centered
+      dummy.position.set((i - barCount / 2) * 0.9, height / 2, 0);
+
+      // Scale height (base box is 1 unit tall)
+      dummy.scale.set(0.8, height, 0.8);
+
+      // Apply transformation
+      dummy.updateMatrix();
+      meshRef.current.setMatrixAt(i, dummy.matrix);
     }
-  };
 
-  const stopVisualizer = () => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-    setIsVisualizing(false);
-  };
-
-  const drawVisualizer = () => {
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const analyser = analyserRef.current;
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
-    const draw = () => {
-      animationFrameRef.current = requestAnimationFrame(draw);
-      analyser.getByteFrequencyData(dataArray);
-
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      const barWidth = (canvas.width / bufferLength) * 2.5;
-      let x = 0;
-
-      for (let i = 0; i < bufferLength; i++) {
-        const barHeight = dataArray[i] * (canvas.height / 255);
-
-        const hue = i / bufferLength * 60 + 180;
-        ctx.fillStyle = `hsl(${hue}, 100%, ${50 + barHeight / canvas.height * 50}%)`;
-        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-
-        x += barWidth + 1;
-      }
-    };
-
-    draw();
-  };
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const resize = () => {
-      canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-      canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-    };
-    resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, []);
-
-  useEffect(() => {
-    return () => stopVisualizer();
-  }, []);
+    // Tell Three.js the instance matrices changed
+    meshRef.current.instanceMatrix.needsUpdate = true;
+  });
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6">
-      <h1 className="text-4xl font-bold mb-8 text-center">Real-Time Audio Visualizer</h1>
-
-      <canvas
-        ref={canvasRef}
-        className="w-full max-w-4xl h-96 bg-slate-800 rounded-xl shadow-2xl mb-8"
+    <instancedMesh ref={meshRef} args={[null, null, 64]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial
+        color="#60a5fa"
+        emissive="#3b82f6"
+        emissiveIntensity={1}
+        metalness={0.6}
+        roughness={0.4}
       />
+    </instancedMesh>
+  );
+}
 
-      {error && (
-        <p className="text-red-400 text-center max-w-2xl mb-6">{error}</p>
-      )}
+function App() {
+  const [audioFile, setAudioFile] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [error, setError] = useState(null);
 
-      <div className="space-x-4">
-        {!isVisualizing ? (
-          <button
-            onClick={startVisualizer}
-            className="px-8 py-4 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold text-lg transition transform hover:scale-105"
-          >
-            Start Visualizer
-          </button>
-        ) : (
-          <button
-            onClick={stopVisualizer}
-            className="px-8 py-4 bg-red-600 hover:bg-red-700 rounded-lg font-semibold text-lg transition transform hover:scale-105"
-          >
-            Stop Visualizer
-          </button>
-        )}
+  const audioRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const sourceRef = useRef(null);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file || !file.type.startsWith('audio/')) {
+      setError('Please upload a valid audio file (mp3, wav, etc.)');
+      return;
+    }
+
+    setAudioFile(URL.createObjectURL(file));
+    setError(null);
+    setIsPlaying(false);
+  };
+
+  const togglePlayback = async () => {
+    if (!audioRef.current) return;
+
+    // Initialize Web Audio API on first play
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      analyserRef.current.smoothingTimeConstant = 0.8;
+
+      sourceRef.current = audioContextRef.current.createMediaElementSource(audioRef.current);
+      sourceRef.current.connect(analyserRef.current);
+      analyserRef.current.connect(audioContextRef.current.destination);
+    }
+
+    if (isPlaying) {
+      audioRef.current.pause();
+    } else {
+      try {
+        await audioRef.current.play();
+      } catch (err) {
+        setError('Playback failed. Try clicking Play again.');
+        console.error(err);
+        return;
+      }
+    }
+
+    setIsPlaying(!isPlaying);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-8">
+      <h1 className="text-5xl font-bold mb-10 text-center">3D Audio Visualizer MVP</h1>
+
+      <div className="w-full max-w-4xl mb-10">
+        <input
+          type="file"
+          accept="audio/*"
+          onChange={handleFileUpload}
+          className="block w-full text-lg text-gray-300 file:mr-6 file:py-4 file:px-8 file:rounded-xl file:border-0 file:text-lg file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"
+        />
       </div>
 
-      <p className="mt-8 text-gray-400 text-center max-w-2xl">
-        This uses your microphone to visualize audio in real-time. Click "Start" and make some noise!
-      </p>
+      {error && <p className="text-red-400 text-xl mb-6">{error}</p>}
+
+      {audioFile && (
+        <>
+          <div className="w-full max-w-5xl h-96 md:h-screen max-h-screen bg-black rounded-2xl shadow-2xl overflow-hidden mb-10">
+            <Canvas camera={{ position: [0, 8, 20], fov: 60 }}>
+              <ambientLight intensity={0.6} />
+              <pointLight position={[10, 10, 10]} intensity={1} />
+              <pointLight position={[-10, -10, -10]} intensity={0.5} color="#a78bfa" />
+
+              <AudioBars analyser={analyserRef.current} />
+
+              {/* Floor */}
+              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.5, 0]}>
+                <planeGeometry args={[60, 60]} />
+                <meshStandardMaterial color="#1e293b" />
+              </mesh>
+
+              <OrbitControls
+                enableZoom={true}
+                enablePan={false}
+                autoRotate
+                autoRotateSpeed={1}
+                minPolarAngle={Math.PI / 4}
+                maxPolarAngle={Math.PI / 2.2}
+              />
+            </Canvas>
+          </div>
+
+          {/* Hidden audio element */}
+          <audio ref={audioRef} src={audioFile} crossOrigin="anonymous" />
+
+          <button
+            onClick={togglePlayback}
+            className="px-10 py-5 bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-xl font-bold text-2xl transition transform shadow-lg"
+          >
+            {isPlaying ? 'Pause' : 'Play & Visualize'}
+          </button>
+        </>
+      )}
+
+      {!audioFile && (
+        <p className="mt-12 text-gray-400 text-center text-xl max-w-2xl">
+          Upload an audio file to experience a dynamic 3D bar visualizer with enhanced bass response.
+        </p>
+      )}
     </div>
   );
 }
