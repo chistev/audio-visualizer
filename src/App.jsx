@@ -3,39 +3,58 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
-function AudioBars({ analyser }) {
+function AudioBars({ analyser, zFormula }) {
   const meshRef = useRef();
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
   useFrame(() => {
     if (!analyser || !meshRef.current) return;
 
-    // Get frequency data
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(dataArray);
 
     const barCount = 64;
 
     for (let i = 0; i < barCount; i++) {
-      // Sample frequencies (every 2nd bin for smoother spread)
-      let value = dataArray[Math.floor(i * 2)] / 255;
+      const freqIndex = Math.floor(i * (dataArray.length / barCount));
+      let value = dataArray[freqIndex] / 255;
 
-      // Simple calculation: strong bass boost for low frequencies
+      // Bass boost for low frequencies
       const bassBoost = i < 16 ? value * 4 : value * 1.5;
       const height = Math.max(0.3, bassBoost * 12);
 
-      // Position bar along X-axis, centered
-      dummy.position.set((i - barCount / 2) * 0.9, height / 2, 0);
+      // Position along X-axis
+      const x = (i - barCount / 2) * 0.9;
 
-      // Scale height (base box is 1 unit tall)
+      // Apply selected Z-axis formula
+      let z = 0;
+      const t = performance.now() * 0.001; // time for animation
+      switch (zFormula) {
+        case 'none':
+          z = 0;
+          break;
+        case 'sine':
+          z = Math.sin(x * 0.2 + t) * (value * 5);
+          break;
+        case 'pulse':
+          z = Math.sin(t * 3) * (value * 8);
+          break;
+        case 'wave':
+          z = Math.sin(i * 0.2 + t * 2) * (value * 6 + 2);
+          break;
+        case 'spiral':
+          z = Math.cos(x * 0.3 + t) * (value * 6) + Math.sin(t) * 2;
+          break;
+        default:
+          z = 0;
+      }
+
+      dummy.position.set(x, height / 2, z);
       dummy.scale.set(0.8, height, 0.8);
-
-      // Apply transformation
       dummy.updateMatrix();
       meshRef.current.setMatrixAt(i, dummy.matrix);
     }
 
-    // Tell Three.js the instance matrices changed
     meshRef.current.instanceMatrix.needsUpdate = true;
   });
 
@@ -45,7 +64,7 @@ function AudioBars({ analyser }) {
       <meshStandardMaterial
         color="#60a5fa"
         emissive="#3b82f6"
-        emissiveIntensity={1}
+        emissiveIntensity={1.2}
         metalness={0.6}
         roughness={0.4}
       />
@@ -57,6 +76,7 @@ function App() {
   const [audioFile, setAudioFile] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState(null);
+  const [zFormula, setZFormula] = useState('sine'); // Default formula
 
   const audioRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -69,7 +89,6 @@ function App() {
       setError('Please upload a valid audio file (mp3, wav, etc.)');
       return;
     }
-
     setAudioFile(URL.createObjectURL(file));
     setError(null);
     setIsPlaying(false);
@@ -78,13 +97,11 @@ function App() {
   const togglePlayback = async () => {
     if (!audioRef.current) return;
 
-    // Initialize Web Audio API on first play
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-
       analyserRef.current = audioContextRef.current.createAnalyser();
       analyserRef.current.fftSize = 256;
-      analyserRef.current.smoothingTimeConstant = 0.8;
+      analyserRef.current.smoothingTimeConstant = 0.85;
 
       sourceRef.current = audioContextRef.current.createMediaElementSource(audioRef.current);
       sourceRef.current.connect(analyserRef.current);
@@ -102,15 +119,14 @@ function App() {
         return;
       }
     }
-
     setIsPlaying(!isPlaying);
   };
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-8">
-      <h1 className="text-5xl font-bold mb-10 text-center">3D Audio Visualizer MVP</h1>
+      <h1 className="text-5xl font-bold mb-8 text-center">3D Audio Visualizer MVP</h1>
 
-      <div className="w-full max-w-4xl mb-10">
+      <div className="w-full max-w-4xl mb-6">
         <input
           type="file"
           accept="audio/*"
@@ -123,37 +139,52 @@ function App() {
 
       {audioFile && (
         <>
-          <div className="w-full max-w-5xl h-96 md:h-screen max-h-screen bg-black rounded-2xl shadow-2xl overflow-hidden mb-10">
-            <Canvas camera={{ position: [0, 8, 20], fov: 60 }}>
+          {/* Z-Formula Selector - Easy to modify in UI */}
+          <div className="mb-6 flex flex-col items-center gap-3">
+            <label className="text-xl font-medium">Z-Axis Effect Formula</label>
+            <select
+              value={zFormula}
+              onChange={(e) => setZFormula(e.target.value)}
+              className="px-6 py-3 bg-slate-800 text-white rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none text-lg"
+            >
+              <option value="none">None (Flat)</option>
+              <option value="sine">Sine Wave (Gentle Curve)</option>
+              <option value="wave">Traveling Wave</option>
+              <option value="pulse">Central Pulse</option>
+              <option value="spiral">Spiral Motion</option>
+            </select>
+          </div>
+
+          <div className="w-full max-w-6xl h-96 md:h-screen max-h-screen bg-black rounded-2xl shadow-2xl overflow-hidden mb-8">
+            <Canvas camera={{ position: [0, 10, 30], fov: 60 }}>
               <ambientLight intensity={0.6} />
-              <pointLight position={[10, 10, 10]} intensity={1} />
-              <pointLight position={[-10, -10, -10]} intensity={0.5} color="#a78bfa" />
+              <pointLight position={[10, 10, 10]} intensity={1.2} />
+              <pointLight position={[-10, -10, -10]} intensity={0.8} color="#a78bfa" />
 
-              <AudioBars analyser={analyserRef.current} />
+              <AudioBars analyser={analyserRef.current} zFormula={zFormula} />
 
-              {/* Floor */}
+              {/* Reflective floor */}
               <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.5, 0]}>
-                <planeGeometry args={[60, 60]} />
-                <meshStandardMaterial color="#1e293b" />
+                <planeGeometry args={[80, 80]} />
+                <meshStandardMaterial color="#0f172a" metalness={0.8} roughness={0.2} />
               </mesh>
 
               <OrbitControls
                 enableZoom={true}
                 enablePan={false}
                 autoRotate
-                autoRotateSpeed={1}
+                autoRotateSpeed={0.8}
                 minPolarAngle={Math.PI / 4}
-                maxPolarAngle={Math.PI / 2.2}
+                maxPolarAngle={Math.PI / 2.1}
               />
             </Canvas>
           </div>
 
-          {/* Hidden audio element */}
           <audio ref={audioRef} src={audioFile} crossOrigin="anonymous" />
 
           <button
             onClick={togglePlayback}
-            className="px-10 py-5 bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-xl font-bold text-2xl transition transform shadow-lg"
+            className="px-12 py-6 bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-xl font-bold text-3xl transition transform shadow-2xl"
           >
             {isPlaying ? 'Pause' : 'Play & Visualize'}
           </button>
@@ -162,7 +193,7 @@ function App() {
 
       {!audioFile && (
         <p className="mt-12 text-gray-400 text-center text-xl max-w-2xl">
-          Upload an audio file to experience a dynamic 3D bar visualizer with enhanced bass response.
+          Upload an audio file to experience a real-time 3D bar visualizer with dynamic Z-axis effects controlled via the formula selector.
         </p>
       )}
     </div>
